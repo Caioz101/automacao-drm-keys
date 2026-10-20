@@ -46,7 +46,6 @@ def main():
 
     ext_path = str(EXTENSION_PATH)
     
-    # FLAG IMPORTANTE: Força o Chromium a aceitar extensões Manifest V2
     browser = launch_persistent_context(
         user_data_dir=str(ROOT / ".playwright-profile"),
         widevine=True,
@@ -56,7 +55,7 @@ def main():
             f"--load-extension={ext_path}",
             "--no-sandbox",
             "--disable-dev-shm-usage",
-            "--enable-features=ExtensionManifestV2Availability" # <--- A MÁGICA ESTÁ AQUI
+            "--enable-features=ExtensionManifestV2Availability"
         ]
     )
 
@@ -72,12 +71,12 @@ def main():
             time.sleep(1)
 
         if bg_page:
-            print("Background encontrado diretamente.")
+            print("Background encontrado diretamente. Iniciando automação...")
+            bg_page.evaluate(f"window.iniciarAutomacao({json.dumps(urls)})")
+            result_page = bg_page
         else:
             print("Background não encontrado via API. Tentando abrir a página da extensão manualmente...")
-            # Plano B: Abre a página popup/main.html diretamente
             page = browser.new_page()
-            # Descobre o ID da extensão abrindo o gerenciador
             page.goto("chrome://extensions/")
             time.sleep(2)
             ext_id = page.evaluate("() => document.querySelector('extensions-manager').extensions_[0].id")
@@ -87,13 +86,13 @@ def main():
                 
             print(f"ID da Extensão descoberto: {ext_id}")
             page.goto(f"chrome-extension://{ext_id}/popup/main.html")
-            bg_page = page
+            
+            print(f"Iniciando automação para {len(urls)} URLs via popup...")
+            # CORREÇÃO AQUI: Acessa a função dentro do contexto do Background
+            page.evaluate(f"chrome.extension.getBackgroundPage().iniciarAutomacao({json.dumps(urls)})")
+            result_page = page
 
-        print(f"Iniciando automação para {len(urls)} URLs...")
-        # Executa a função no background ou na página injetada
-        bg_page.evaluate(f"window.iniciarAutomacao({json.dumps(urls)})")
-        
-        resultado = wait_for_result(bg_page)
+        resultado = wait_for_result(result_page)
         
         RESULT_PATH.write_text(
             json.dumps(resultado, ensure_ascii=False, indent=2) + "\n",
