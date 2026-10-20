@@ -16,28 +16,6 @@ def get_urls():
             return [item.strip() for item in content.splitlines() if item.strip()]
     return []
 
-def wait_for_result(page):
-    deadline = time.time() + 900 # 15 minutos
-    while time.time() < deadline:
-        data = page.evaluate("""
-            () => new Promise((resolve) => {
-                const check = () => {
-                    chrome.storage.local.get(['automationResult', 'automationStatus'], (result) => {
-                        if (result.automationStatus === 'finalizada') {
-                            resolve(result.automationResult || { channels: {} });
-                            return;
-                        }
-                        setTimeout(check, 2000);
-                    });
-                };
-                check();
-            })
-        """)
-        if data:
-            return data
-        time.sleep(2)
-    raise TimeoutError("Tempo limite excedido.")
-
 def main():
     urls = get_urls()
     if not urls:
@@ -46,6 +24,7 @@ def main():
 
     ext_path = str(EXTENSION_PATH)
     
+    print("Iniciando navegador Clearcote...")
     browser = launch_persistent_context(
         user_data_dir=str(ROOT / ".playwright-profile"),
         widevine=True,
@@ -60,46 +39,78 @@ def main():
     )
 
     try:
-        print("Aguardando a extensão carregar...")
-        bg_page = None
+        print("Navegador aberto. Procurando o ID da extensão...")
+        page = browser.new_page()
         
-        # Tenta achar a página de background por até 10 segundos
-        for i in range(10):
-            if browser.background_pages:
-                bg_page = browser.background_pages[0]
+        # Vai para a página de extensões para descobrir o ID da nossa extensão
+        page.goto("chrome://extensions/")
+        time.sleep(3)
+        
+        ext_id = page.evaluate("() => document.querySelector('extensions-manager').extensions_[0].id")
+        
+        if not ext_id:
+            raise RuntimeError("Não foi possível encontrar o ID da extensão. Verifique se ela carregou.")
+            
+        print(f"ID da Extensão encontrado: {ext_id}")
+        
+        # Abre o popup da extensão para usar como "ponte" de comunicação
+        page.goto(f"chrome-extension://{ext_id}/popup/main.html")
+        time.sleep(2)
+
+        print(f"Enviando comando para iniciar automação de {len(urls)} URLs...")
+        
+        # Usa a API de mensagens do Chrome (muito mais confiável no Clearcote)
+        page.evaluate(f"""
+            () => {{
+                return new Promise((resolve, reject) => {{
+                    chrome.runtime.sendMessage({{ action: 'start_check', urls: {json.dumps(urls)} }}, (response) => {{
+                        if (chrome.runtime.lastError) {{
+                            reject(chrome.runtime.lastError.message);
+                        }} else {{
+                            resolve(response);
+                        }}
+                    }});
+                }});
+            }}
+        """)
+
+        print("Comando enviado. Aguardando a captura das chaves (timeout de 3 minutos)...")
+
+        # Loop de verificação
+        deadline = time.time() + 180 # 3 minutos
+        resultado = None
+
+        while time.time() < deadline:
+            resultado = page.evaluate("""
+                () => new Promise((resolve) => {
+                    chrome.storage.local.get(['automationResult', 'automationStatus'], (result) => {
+                        if (result.automationStatus === 'finalizada') {
+                            resolve(result.automationResult || { channels: {} });
+                        } else {
+                            resolve(null);
+                        }
+                    });
+                })
+            """)
+            
+            if resultado:
+                print("Automação finalizada com sucesso!")
                 break
-            time.sleep(1)
-
-        if bg_page:
-            print("Background encontrado diretamente. Iniciando automação...")
-            bg_page.evaluate(f"window.iniciarAutomacao({json.dumps(urls)})")
-            result_page = bg_page
-        else:
-            print("Background não encontrado via API. Tentando abrir a página da extensão manualmente...")
-            page = browser.new_page()
-            page.goto("chrome://extensions/")
-            time.sleep(2)
-            ext_id = page.evaluate("() => document.querySelector('extensions-manager').extensions_[0].id")
-            
-            if not ext_id:
-                raise RuntimeError("Não foi possível descobrir o ID da extensão.")
                 
-            print(f"ID da Extensão descoberto: {ext_id}")
-            page.goto(f"chrome-extension://{ext_id}/popup/main.html")
-            
-            print(f"Iniciando automação para {len(urls)} URLs via popup...")
-            # CORREÇÃO AQUI: Acessa a função dentro do contexto do Background
-            page.evaluate(f"chrome.extension.getBackgroundPage().iniciarAutomacao({json.dumps(urls)})")
-            result_page = page
+            time.sleep(5) # Espera 5 segundos antes de checar de novo
 
-        resultado = wait_for_result(result_page)
-        
-        RESULT_PATH.write_text(
-            json.dumps(resultado, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8"
-        )
-        print("Automação finalizada e arquivo canais_com_chaves.json atualizado!")
+        if resultado:
+            RESULT_PATH.write_text(
+                json.dumps(resultado, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8"
+            )
+            print("Arquivo canais_com_chaves.json atualizado!")
+        else:
+            print("ERRO: Tempo limite esgotado. A automação não terminou em 3 minutos.")
 
+    except Exception as e:
+        print(f"OCORREU UM ERRO NO SCRIPT: {e}")
+        raise e
     finally:
         browser.close()
 
