@@ -19,8 +19,7 @@ def get_urls():
 def main():
     urls = get_urls()
     if not urls:
-        print("ERRO: Nenhuma URL encontrada no lista_urls.txt")
-        return
+        raise RuntimeError("Nenhuma URL encontrada no lista_urls.txt")
 
     ext_path = str(EXTENSION_PATH)
     
@@ -106,7 +105,7 @@ def main():
             )
             print("Arquivo canais_com_chaves.json atualizado!")
         else:
-            print("ERRO: Tempo limite esgotado. A automação não terminou em 3 minutos.")
+            raise TimeoutError("Tempo limite esgotado. A automação não terminou em 3 minutos.")
 
     except Exception as e:
         print(f"OCORREU UM ERRO NO SCRIPT: {e}")
