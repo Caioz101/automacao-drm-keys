@@ -3,7 +3,6 @@ import os
 import time
 from pathlib import Path
 from clearcote import launch_persistent_context
-from playwright.sync_api import sync_playwright
 
 ROOT = Path(__file__).resolve().parent
 EXTENSION_PATH = ROOT / "extension"
@@ -18,8 +17,7 @@ def get_urls():
     return []
 
 def wait_for_result(bg_page):
-    deadline = time.time() + 900 # 15 minutos de limite
-
+    deadline = time.time() + 900 # 15 minutos
     while time.time() < deadline:
         data = bg_page.evaluate("""
             () => new Promise((resolve) => {
@@ -43,12 +41,18 @@ def wait_for_result(bg_page):
 def main():
     urls = get_urls()
     if not urls:
-        print("Nenhuma URL encontrada no lista_urls.txt")
+        print("ERRO: Nenhuma URL encontrada no lista_urls.txt")
         return
 
     ext_path = str(EXTENSION_PATH)
+    print(f"Tentando carregar extensão do caminho: {ext_path}")
 
-    # Inicia o navegador com Widevine e Extensão
+    # Verifica se o manifest.json está no lugar certo
+    if not (EXTENSION_PATH / "manifest.json").exists():
+        print("ERRO FATAL: O arquivo 'manifest.json' não foi encontrado dentro da pasta 'extension'.")
+        print("Verifique se você não subiu a pasta 'extension/extension/' por engano.")
+        return
+
     browser = launch_persistent_context(
         user_data_dir=str(ROOT / ".playwright-profile"),
         widevine=True,
@@ -62,17 +66,33 @@ def main():
     )
 
     try:
-        time.sleep(5) # Aguarda a extensão carregar
+        print("Aguardando a extensão carregar...")
         bg_page = None
-        for page in browser.background_pages:
-            if page.url.startswith("chrome-extension://"):
-                bg_page = page
+        
+        # Tenta achar a página de background por até 15 segundos
+        for i in range(15):
+            if browser.background_pages:
+                for page in browser.background_pages:
+                    if page.url.startswith("chrome-extension://"):
+                        bg_page = page
+                        break
+            if bg_page:
                 break
+            time.sleep(1)
+
+        # Se não achar, tenta procurar nas abas normais (fallback)
+        if not bg_page:
+            for page in browser.pages:
+                if page.url.startswith("chrome-extension://"):
+                    bg_page = page
+                    break
 
         if not bg_page:
-            raise RuntimeError("Background da extensão não encontrado.")
+            print("ERRO: Não foi possível encontrar o background da extensão.")
+            print("URLs das abas abertas no momento:", [p.url for p in browser.pages])
+            raise RuntimeError("Background não encontrado. Verifique os arquivos da extensão.")
 
-        print(f"Iniciando automação para {len(urls)} URLs...")
+        print(f"Extensão carregada! Iniciando automação para {len(urls)} URLs...")
         bg_page.evaluate(f"window.iniciarAutomacao({json.dumps(urls)})")
         
         resultado = wait_for_result(bg_page)
@@ -81,7 +101,7 @@ def main():
             json.dumps(resultado, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8"
         )
-        print("Automação finalizada e arquivo salvo!")
+        print("Automação finalizada e arquivo canais_com_chaves.json atualizado!")
 
     finally:
         browser.close()
